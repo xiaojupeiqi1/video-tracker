@@ -10,7 +10,7 @@
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     
-    <!-- 引入 Firebase 兼容版全局脚本 (避免双击本地文件时被浏览器拦截) -->
+    <!-- 引入 Firebase 兼容版全局脚本 -->
     <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore-compat.js"></script>
@@ -22,12 +22,11 @@
 <body class="bg-gray-50">
     <div id="root"></div>
 
-    <!-- 移除了 data-type="module"，使用标准 Babel 编译，杜绝跨域白屏问题 -->
     <script type="text/babel">
         const { useState, useEffect, useCallback, useRef } = React;
 
         // ==========================================
-        // 图标安全渲染组件：防止 Lucide 替换 DOM 导致 React 崩溃
+        // 图标安全渲染组件
         // ==========================================
         const LucideIcon = ({ name, className }) => {
             const spanRef = useRef(null);
@@ -61,9 +60,8 @@
         };
 
         // ==========================================
-        // ☁️ 云端数据库配置区 (在这里填入你的配置)
+        // ☁️ 云端数据库配置区 (已为您完美修复)
         // ==========================================
-        // 注意：只复制大括号 { } 里面的内容，不要破坏前后的格式！
         const USER_FIREBASE_CONFIG = {
             apiKey: "AIzaSyA5-dgYm9YdOqiuhobzcjKnc19lfydGpzw",
             authDomain: "myvideotracker-6b520.firebaseapp.com",
@@ -74,22 +72,10 @@
             measurementId: "G-VLQYH36DDY"
         }; 
 
-        /* 填写示例：
-        const USER_FIREBASE_CONFIG = {
-            apiKey: "AIzaSyB................",
-            authDomain: "your-project.firebaseapp.com",
-            projectId: "your-project",
-            storageBucket: "your-project.appspot.com",
-            messagingSenderId: "123456789",
-            appId: "1:123456:web:abcdefg"
-        };
-        */
-
         let firebaseConfig;
         let appId = 'video-tracker-app';
         let authToken = null;
 
-        // 自动探测环境
         if (typeof __firebase_config !== 'undefined') {
             firebaseConfig = JSON.parse(__firebase_config);
             appId = typeof __app_id !== 'undefined' ? __app_id : appId;
@@ -98,7 +84,6 @@
             firebaseConfig = USER_FIREBASE_CONFIG;
         }
 
-        // 初始化 Firebase (使用全局兼容版 API)
         let app = null;
         let auth = null;
         let db = null;
@@ -113,7 +98,6 @@
             db = firebase.firestore();
         }
 
-        // 默认数据结构
         const defaultData = {
             produced: { single: 0, duo: 0, ai: 0 },
             published: { wx1_ai: 0, wx2_single: 0, wx2_ai: 0, dy_ai: 0 },
@@ -129,7 +113,6 @@
             const [data, setData] = useState(defaultData);
             const [showConfirmDialog, setShowConfirmDialog] = useState(false);
 
-            // 1. 初始化身份认证
             useEffect(() => {
                 if (!auth) {
                     setAuthLoading(false);
@@ -157,17 +140,17 @@
                 return () => unsubscribe();
             }, []);
 
-            // 2. 建立实时数据同步通道
+            // 监听全局统一文档，解决多设备匿名 UID 不同的问题
             useEffect(() => {
                 if (!user || !db) {
                     setDataLoading(false);
                     return;
                 }
 
-                const docRef = db.doc(`artifacts/${appId}/users/${user.uid}/videoTrackerData/mainDoc`);
+                // 核心修复点：使用 public/data 全局路径，确保手机电脑读写同一份文件
+                const docRef = db.doc(`artifacts/${appId}/public/data/videoTrackerData/mainDoc`);
                 
                 const unsubscribe = docRef.onSnapshot((docSnap) => {
-                    // 注意：在 compat 版本中，exists 是一个属性，不是方法
                     if (docSnap.exists) {
                         setData(prev => ({ ...prev, ...docSnap.data() }));
                     } else {
@@ -182,19 +165,18 @@
                 return () => unsubscribe();
             }, [user]);
 
-            // 3. 通用云端更新函数
+            // 通用云端更新函数
             const updateCloudData = useCallback((updater) => {
                 setData(prevData => {
                     const newData = updater(prevData);
                     if (user && db) {
-                        const docRef = db.doc(`artifacts/${appId}/users/${user.uid}/videoTrackerData/mainDoc`);
+                        const docRef = db.doc(`artifacts/${appId}/public/data/videoTrackerData/mainDoc`);
                         docRef.set(newData, { merge: true }).catch(console.error);
                     }
                     return newData;
                 });
             }, [user]);
 
-            // 具体操作函数
             const TARGETS = {
                 produce: { single: 10, duo: 10, ai: 10 },
                 publish: { wx1_ai: 10, wx2_single: 10, wx2_ai: 10, dy_ai: 10 }
@@ -269,12 +251,8 @@
                             <icons.AlertCircle className="w-16 h-16 text-red-500 mx-auto mb-4" />
                             <h2 className="text-xl font-bold text-gray-800 mb-2">未连接到云数据库</h2>
                             <p className="text-sm text-gray-600 mb-6 text-left">
-                                页面不再白屏啦！但系统仍找不到您的专属数据库配置。
+                                配置出错了，请检查代码里的 USER_FIREBASE_CONFIG。
                             </p>
-                            <div className="text-sm text-gray-600 text-left bg-gray-50 p-4 rounded-xl border">
-                                <p className="font-medium text-gray-800 mb-2">最后一步操作指南：</p>
-                                <p>请使用文本编辑器打开此文件，找到 <code>USER_FIREBASE_CONFIG</code>，将大括号 <code>{}</code> 及里面的内容，替换为您刚才在 Firebase 复制的代码。</p>
-                            </div>
                         </div>
                     </div>
                 );
