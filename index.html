@@ -9,6 +9,12 @@
     <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- 引入 Firebase 兼容版全局脚本 (避免双击本地文件时被浏览器拦截) -->
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore-compat.js"></script>
+
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
     </style>
@@ -16,12 +22,9 @@
 <body class="bg-gray-50">
     <div id="root"></div>
 
-    <script type="text/babel" data-type="module">
+    <!-- 移除了 data-type="module"，使用标准 Babel 编译，杜绝跨域白屏问题 -->
+    <script type="text/babel">
         const { useState, useEffect, useCallback, useRef } = React;
-
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // ==========================================
         // 图标安全渲染组件：防止 Lucide 替换 DOM 导致 React 崩溃
@@ -30,23 +33,17 @@
             const spanRef = useRef(null);
             useEffect(() => {
                 if (spanRef.current) {
-                    // 清空现有的子元素
                     spanRef.current.innerHTML = '';
-                    // 手动创建一个 i 标签给 Lucide 处理
                     const i = document.createElement('i');
                     i.setAttribute('data-lucide', name);
                     if (className) i.className = className;
                     spanRef.current.appendChild(i);
-                    // 仅在当前 span 范围内渲染 SVG
                     lucide.createIcons({ root: spanRef.current });
                 }
             }, [name, className]);
-            
-            // 使用 contents 类名让外层 span 不影响内部 Flex 布局
             return <span ref={spanRef} className="contents"></span>;
         };
 
-        // lucide icons 配置
         const icons = {
             Scissors: ({className}) => <LucideIcon name="scissors" className={className || "w-5 h-5 text-blue-600"} />,
             Send: ({className}) => <LucideIcon name="send" className={className || "w-5 h-5 text-green-600"} />,
@@ -64,9 +61,10 @@
         };
 
         // ==========================================
-        // ☁️ 云端数据库配置区
+        // ☁️ 云端数据库配置区 (在这里填入你的配置)
         // ==========================================
-      const firebaseConfig = {
+        // 注意：只复制大括号 { } 里面的内容，不要破坏前后的格式！
+        const firebaseConfig = {
   apiKey: "AIzaSyA5-dgYm9YdOqiuhobzcjKnc19lfydGpzw",
   authDomain: "myvideotracker-6b520.firebaseapp.com",
   projectId: "myvideotracker-6b520",
@@ -74,13 +72,24 @@
   messagingSenderId: "1053268329253",
   appId: "1:1053268329253:web:5f6bb7af32ce8494b890cc",
   measurementId: "G-VLQYH36DDY"
-};
+}; 
+
+        /* 填写示例：
+        const USER_FIREBASE_CONFIG = {
+            apiKey: "AIzaSyB................",
+            authDomain: "your-project.firebaseapp.com",
+            projectId: "your-project",
+            storageBucket: "your-project.appspot.com",
+            messagingSenderId: "123456789",
+            appId: "1:123456:web:abcdefg"
+        };
+        */
 
         let firebaseConfig;
         let appId = 'video-tracker-app';
         let authToken = null;
 
-        // 自动探测智能平台的云端环境
+        // 自动探测环境
         if (typeof __firebase_config !== 'undefined') {
             firebaseConfig = JSON.parse(__firebase_config);
             appId = typeof __app_id !== 'undefined' ? __app_id : appId;
@@ -89,9 +98,20 @@
             firebaseConfig = USER_FIREBASE_CONFIG;
         }
 
-        const app = firebaseConfig ? initializeApp(firebaseConfig) : null;
-        const auth = app ? getAuth(app) : null;
-        const db = app ? getFirestore(app) : null;
+        // 初始化 Firebase (使用全局兼容版 API)
+        let app = null;
+        let auth = null;
+        let db = null;
+        
+        if (firebaseConfig) {
+            if (!firebase.apps.length) {
+                app = firebase.initializeApp(firebaseConfig);
+            } else {
+                app = firebase.app();
+            }
+            auth = firebase.auth();
+            db = firebase.firestore();
+        }
 
         // 默认数据结构
         const defaultData = {
@@ -119,9 +139,9 @@
                 const initAuth = async () => {
                     try {
                         if (authToken) {
-                            await signInWithCustomToken(auth, authToken);
+                            await auth.signInWithCustomToken(authToken);
                         } else {
-                            await signInAnonymously(auth);
+                            await auth.signInAnonymously();
                         }
                     } catch (error) {
                         console.error("认证失败:", error);
@@ -129,7 +149,7 @@
                 };
                 initAuth();
 
-                const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+                const unsubscribe = auth.onAuthStateChanged((currentUser) => {
                     setUser(currentUser);
                     setAuthLoading(false);
                 });
@@ -144,13 +164,14 @@
                     return;
                 }
 
-                const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'videoTrackerData', 'mainDoc');
+                const docRef = db.doc(`artifacts/${appId}/users/${user.uid}/videoTrackerData/mainDoc`);
                 
-                const unsubscribe = onSnapshot(docRef, (docSnap) => {
-                    if (docSnap.exists()) {
+                const unsubscribe = docRef.onSnapshot((docSnap) => {
+                    // 注意：在 compat 版本中，exists 是一个属性，不是方法
+                    if (docSnap.exists) {
                         setData(prev => ({ ...prev, ...docSnap.data() }));
                     } else {
-                        setDoc(docRef, defaultData).catch(console.error);
+                        docRef.set(defaultData).catch(console.error);
                     }
                     setDataLoading(false);
                 }, (error) => {
@@ -161,13 +182,13 @@
                 return () => unsubscribe();
             }, [user]);
 
-            // 3. 通用云端更新函数（自动乐观更新+防冲突）
+            // 3. 通用云端更新函数
             const updateCloudData = useCallback((updater) => {
                 setData(prevData => {
                     const newData = updater(prevData);
                     if (user && db) {
-                        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'videoTrackerData', 'mainDoc');
-                        setDoc(docRef, newData, { merge: true }).catch(console.error);
+                        const docRef = db.doc(`artifacts/${appId}/users/${user.uid}/videoTrackerData/mainDoc`);
+                        docRef.set(newData, { merge: true }).catch(console.error);
                     }
                     return newData;
                 });
@@ -248,11 +269,11 @@
                             <icons.AlertCircle className="w-16 h-16 text-red-500 mx-auto mb-4" />
                             <h2 className="text-xl font-bold text-gray-800 mb-2">未连接到云数据库</h2>
                             <p className="text-sm text-gray-600 mb-6 text-left">
-                                您已开启云端同步功能。由于您可能脱离了原画布环境独立运行此文件，系统找不到默认的数据库配置。
+                                页面不再白屏啦！但系统仍找不到您的专属数据库配置。
                             </p>
                             <div className="text-sm text-gray-600 text-left bg-gray-50 p-4 rounded-xl border">
-                                <p className="font-medium text-gray-800 mb-2">解决方案：</p>
-                                <p>请使用文本编辑器打开此 HTML 文件，找到 <code>USER_FIREBASE_CONFIG</code>，将其替换为您自己的免费 Firebase 项目配置代码即可。</p>
+                                <p className="font-medium text-gray-800 mb-2">最后一步操作指南：</p>
+                                <p>请使用文本编辑器打开此文件，找到 <code>USER_FIREBASE_CONFIG</code>，将大括号 <code>{}</code> 及里面的内容，替换为您刚才在 Firebase 复制的代码。</p>
                             </div>
                         </div>
                     </div>
