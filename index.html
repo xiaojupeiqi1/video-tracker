@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>自媒体矩阵工作台 (云同步版)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+        const { useState, useEffect, useCallback, useRef } = React;
+
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // ==========================================
+        // 图标安全渲染组件：防止 Lucide 替换 DOM 导致 React 崩溃
+        // ==========================================
+        const LucideIcon = ({ name, className }) => {
+            const spanRef = useRef(null);
+            useEffect(() => {
+                if (spanRef.current) {
+                    // 清空现有的子元素
+                    spanRef.current.innerHTML = '';
+                    // 手动创建一个 i 标签给 Lucide 处理
+                    const i = document.createElement('i');
+                    i.setAttribute('data-lucide', name);
+                    if (className) i.className = className;
+                    spanRef.current.appendChild(i);
+                    // 仅在当前 span 范围内渲染 SVG
+                    lucide.createIcons({ root: spanRef.current });
+                }
+            }, [name, className]);
+            
+            // 使用 contents 类名让外层 span 不影响内部 Flex 布局
+            return <span ref={spanRef} className="contents"></span>;
+        };
+
+        // lucide icons 配置
+        const icons = {
+            Scissors: ({className}) => <LucideIcon name="scissors" className={className || "w-5 h-5 text-blue-600"} />,
+            Send: ({className}) => <LucideIcon name="send" className={className || "w-5 h-5 text-green-600"} />,
+            Archive: ({className}) => <LucideIcon name="archive" className={className || "w-5 h-5 text-purple-600"} />,
+            Plus: ({className}) => <LucideIcon name="plus" className={className || "w-4 h-4"} />,
+            Minus: ({className}) => <LucideIcon name="minus" className={className || "w-4 h-4"} />,
+            CheckCircle2: ({className}) => <LucideIcon name="check-circle-2" className={className || "w-4 h-4 text-green-500"} />,
+            RefreshCw: ({className}) => <LucideIcon name="refresh-cw" className={className || "w-4 h-4"} />,
+            Video: ({className}) => <LucideIcon name="video" className={className || "w-4 h-4 text-gray-400"} />,
+            Smartphone: ({className}) => <LucideIcon name="smartphone" className={className || "w-4 h-4 text-gray-400"} />,
+            AlertCircle: ({className}) => <LucideIcon name="alert-circle" className={className || "w-4 h-4"} />,
+            Layers: ({className}) => <LucideIcon name="layers" className={className || "w-5 h-5 text-indigo-600"} />,
+            Trophy: ({className}) => <LucideIcon name="trophy" className={className || "w-5 h-5 text-yellow-600"} />,
+            Cloud: ({className}) => <LucideIcon name="cloud" className={className || "w-4 h-4 text-green-600"} />
+        };
+
+        // ==========================================
+        // ☁️ 云端数据库配置区
+        // ==========================================
+        const USER_FIREBASE_CONFIG = null; 
+
+        let firebaseConfig;
+        let appId = 'video-tracker-app';
+        let authToken = null;
+
+        // 自动探测智能平台的云端环境
+        if (typeof __firebase_config !== 'undefined') {
+            firebaseConfig = JSON.parse(__firebase_config);
+            appId = typeof __app_id !== 'undefined' ? __app_id : appId;
+            authToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        } else if (USER_FIREBASE_CONFIG) {
+            firebaseConfig = USER_FIREBASE_CONFIG;
+        }
+
+        const app = firebaseConfig ? initializeApp(firebaseConfig) : null;
+        const auth = app ? getAuth(app) : null;
+        const db = app ? getFirestore(app) : null;
+
+        // 默认数据结构
+        const defaultData = {
+            produced: { single: 0, duo: 0, ai: 0 },
+            published: { wx1_ai: 0, wx2_single: 0, wx2_ai: 0, dy_ai: 0 },
+            baseInventory: { single: 0, duo: 0, ai: 0 },
+            weeklyRaw: { single: 0, duo: 0, ai: 0 },
+            totalHistory: { single: 0, duo: 0, ai: 0 }
+        };
+
+        function App() {
+            const [user, setUser] = useState(null);
+            const [authLoading, setAuthLoading] = useState(true);
+            const [dataLoading, setDataLoading] = useState(true);
+            const [data, setData] = useState(defaultData);
+            const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+
+            // 1. 初始化身份认证
+            useEffect(() => {
+                if (!auth) {
+                    setAuthLoading(false);
+                    return;
+                }
+
+                const initAuth = async () => {
+                    try {
+                        if (authToken) {
+                            await signInWithCustomToken(auth, authToken);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    } catch (error) {
+                        console.error("认证失败:", error);
+                    }
+                };
+                initAuth();
+
+                const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+                    setUser(currentUser);
+                    setAuthLoading(false);
+                });
+
+                return () => unsubscribe();
+            }, []);
+
+            // 2. 建立实时数据同步通道
+            useEffect(() => {
+                if (!user || !db) {
+                    setDataLoading(false);
+                    return;
+                }
+
+                const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'videoTrackerData', 'mainDoc');
+                
+                const unsubscribe = onSnapshot(docRef, (docSnap) => {
+                    if (docSnap.exists()) {
+                        setData(prev => ({ ...prev, ...docSnap.data() }));
+                    } else {
+                        setDoc(docRef, defaultData).catch(console.error);
+                    }
+                    setDataLoading(false);
+                }, (error) => {
+                    console.error("数据同步失败:", error);
+                    setDataLoading(false);
+                });
+
+                return () => unsubscribe();
+            }, [user]);
+
+            // 3. 通用云端更新函数（自动乐观更新+防冲突）
+            const updateCloudData = useCallback((updater) => {
+                setData(prevData => {
+                    const newData = updater(prevData);
+                    if (user && db) {
+                        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'videoTrackerData', 'mainDoc');
+                        setDoc(docRef, newData, { merge: true }).catch(console.error);
+                    }
+                    return newData;
+                });
+            }, [user]);
+
+            // 具体操作函数
+            const TARGETS = {
+                produce: { single: 10, duo: 10, ai: 10 },
+                publish: { wx1_ai: 10, wx2_single: 10, wx2_ai: 10, dy_ai: 10 }
+            };
+
+            const updateProduced = (type, delta) => {
+                updateCloudData(prev => {
+                    const current = prev.produced[type] || 0;
+                    const next = Math.min(10, Math.max(0, current + delta));
+                    const diff = next - current;
+
+                    if (diff === 0) return prev;
+
+                    return {
+                        ...prev,
+                        produced: { ...prev.produced, [type]: next },
+                        weeklyRaw: { ...prev.weeklyRaw, [type]: (prev.weeklyRaw[type] || 0) - diff },
+                        totalHistory: { ...prev.totalHistory, [type]: (prev.totalHistory[type] || 0) + diff }
+                    };
+                });
+            };
+
+            const updatePublished = (type, delta) => {
+                updateCloudData(prev => ({
+                    ...prev,
+                    published: { ...prev.published, [type]: Math.min(10, Math.max(0, (prev.published[type] || 0) + delta)) }
+                }));
+            };
+
+            const updateBaseInventory = (type, delta) => {
+                updateCloudData(prev => ({
+                    ...prev,
+                    baseInventory: { ...prev.baseInventory, [type]: Math.min(10, Math.max(0, (prev.baseInventory[type] || 0) + delta)) }
+                }));
+            };
+
+            const updateWeeklyRaw = (type, delta) => {
+                updateCloudData(prev => ({
+                    ...prev,
+                    weeklyRaw: { ...prev.weeklyRaw, [type]: (prev.weeklyRaw[type] || 0) + delta }
+                }));
+            };
+
+            const updateTotalHistory = (type, delta) => {
+                updateCloudData(prev => ({
+                    ...prev,
+                    totalHistory: { ...prev.totalHistory, [type]: Math.max(0, (prev.totalHistory[type] || 0) + delta) }
+                }));
+            };
+
+            const confirmEndDay = () => {
+                updateCloudData(prev => {
+                    const currentInv = {
+                        single: (prev.baseInventory.single || 0) + (prev.produced.single || 0) - (prev.published.wx2_single || 0),
+                        duo: (prev.baseInventory.duo || 0) + (prev.produced.duo || 0),
+                        ai: (prev.baseInventory.ai || 0) + (prev.produced.ai || 0) - ((prev.published.wx1_ai || 0) + (prev.published.wx2_ai || 0) + (prev.published.dy_ai || 0))
+                    };
+                    return {
+                        ...prev,
+                        baseInventory: currentInv,
+                        produced: { single: 0, duo: 0, ai: 0 },
+                        published: { wx1_ai: 0, wx2_single: 0, wx2_ai: 0, dy_ai: 0 }
+                    };
+                });
+                setShowConfirmDialog(false);
+            };
+
+            if (!app) {
+                return (
+                    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+                        <div className="bg-white p-8 rounded-2xl shadow-lg border border-red-100 max-w-md text-center">
+                            <icons.AlertCircle className="w-16 h-16 text-red-500 mx-auto mb-4" />
+                            <h2 className="text-xl font-bold text-gray-800 mb-2">未连接到云数据库</h2>
+                            <p className="text-sm text-gray-600 mb-6 text-left">
+                                您已开启云端同步功能。由于您可能脱离了原画布环境独立运行此文件，系统找不到默认的数据库配置。
+                            </p>
+                            <div className="text-sm text-gray-600 text-left bg-gray-50 p-4 rounded-xl border">
+                                <p className="font-medium text-gray-800 mb-2">解决方案：</p>
+                                <p>请使用文本编辑器打开此 HTML 文件，找到 <code>USER_FIREBASE_CONFIG</code>，将其替换为您自己的免费 Firebase 项目配置代码即可。</p>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            if (authLoading || (user && dataLoading)) {
+                return (
+                    <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 gap-4">
+                        <div className="animate-spin"><icons.RefreshCw className="w-10 h-10 text-indigo-600" /></div>
+                        <span className="text-gray-600 font-medium tracking-wider text-sm bg-white px-4 py-2 rounded-full shadow-sm">连接云端数据中...</span>
+                    </div>
+                );
+            }
+
+            const ProgressBar = ({ current, target }) => {
+                const percent = Math.min(100, (current / target) * 100);
+                const isComplete = current >= target;
+                return (
+                    <div className="w-full bg-gray-100 rounded-full h-1.5 mt-2">
+                        <div className={`h-1.5 rounded-full transition-all duration-300 ${isComplete ? 'bg-green-500' : 'bg-blue-500'}`} style={{ width: `${percent}%` }}></div>
+                    </div>
+                );
+            };
+
+            const CounterRow = ({ label, current, target, onUpdate, iconName }) => {
+                const isComplete = target && current >= target;
+                const IconComponent = icons[iconName];
+                return (
+                    <div className="flex flex-col py-3 border-b border-gray-100 last:border-0 hover:bg-gray-50 transition-colors -mx-2 px-2 rounded-lg">
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                                <IconComponent />
+                                <span className={`text-sm font-medium ${isComplete ? 'text-gray-400 line-through' : 'text-gray-700'}`}>{label}</span>
+                                {isComplete && <icons.CheckCircle2 />}
+                            </div>
+                            <div className="flex items-center gap-3">
+                                <button onClick={() => onUpdate(-1)} className="w-8 h-8 flex items-center justify-center rounded-full bg-white border border-gray-200 text-gray-600 hover:bg-gray-100 active:scale-95 transition-all shadow-sm"><icons.Minus /></button>
+                                <div className="w-12 text-center font-bold text-gray-800 text-lg">{current} {target && <span className="text-xs text-gray-400 font-normal">/ {target}</span>}</div>
+                                <button onClick={() => onUpdate(1)} className="w-8 h-8 flex items-center justify-center rounded-full bg-blue-50 border border-blue-100 text-blue-600 hover:bg-blue-100 active:scale-95 transition-all shadow-sm"><icons.Plus /></button>
+                            </div>
+                        </div>
+                        {target && <ProgressBar current={current} target={target} />}
+                    </div>
+                );
+            };
+
+            const currentInventory = {
+                single: (data.baseInventory.single || 0) + (data.produced.single || 0) - (data.published.wx2_single || 0),
+                duo: (data.baseInventory.duo || 0) + (data.produced.duo || 0),
+                ai: (data.baseInventory.ai || 0) + (data.produced.ai || 0) - ((data.published.wx1_ai || 0) + (data.published.wx2_ai || 0) + (data.published.dy_ai || 0))
+            };
+
+            return (
+                <div className="min-h-screen p-4 md:p-8 font-sans pb-20">
+                    <div className="max-w-4xl mx-auto space-y-6">
+                        
+                        {/* Header */}
+                        <div className="flex flex-col md:flex-row md:items-center justify-between bg-white p-6 rounded-2xl shadow-sm border border-gray-100 gap-4">
+                            <div>
+                                <div className="flex items-center gap-3">
+                                    <h1 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
+                                        <icons.Video className="w-6 h-6 text-blue-600" /> 自媒体矩阵工作台
+                                    </h1>
+                                    <span className="hidden md:flex text-xs bg-green-50 border border-green-100 text-green-700 px-3 py-1 rounded-full items-center gap-1.5 font-medium shadow-sm">
+                                        <icons.Cloud className="w-3 h-3"/> 已开启实时云同步
+                                    </span>
+                                </div>
+                                <p className="text-sm text-gray-500 mt-1">自动记录每日剪辑、发布与视频库存状态</p>
+                            </div>
+                            <button onClick={() => setShowConfirmDialog(true)} className="flex items-center justify-center gap-2 px-5 py-2.5 bg-gray-900 text-white rounded-xl hover:bg-gray-800 active:scale-95 transition-all shadow-md font-medium text-sm">
+                                <icons.RefreshCw /> 结束今天工作 (结转库存)
+                            </button>
+                        </div>
+
+                        {/* 历史总计荣誉榜 */}
+                        <div className="bg-gradient-to-br from-yellow-50 to-amber-50 p-6 rounded-2xl shadow-sm border border-yellow-100 relative overflow-hidden">
+                            <div className="absolute top-0 right-0 p-4 opacity-10 pointer-events-none">
+                                <icons.Trophy className="w-32 h-32 text-yellow-600" />
+                            </div>
+                            <div className="flex items-center gap-3 mb-5 pb-3 border-b border-yellow-200/50 relative z-10">
+                                <div className="p-2.5 bg-gradient-to-br from-yellow-100 to-amber-200 rounded-xl shadow-sm border border-yellow-200">
+                                    <icons.Trophy />
+                                </div>
+                                <div>
+                                    <h2 className="text-xl font-bold text-yellow-900">历史累计产出汇总</h2>
+                                    <p className="text-xs text-yellow-700 font-normal mt-0.5">记录你创造的所有价值！每日剪辑增加时，这里会自动累计到云端。</p>
+                                </div>
+                            </div>
+                            
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 relative z-10">
+                                <div className="p-4 rounded-xl bg-white/70 backdrop-blur-sm border border-yellow-200 shadow-sm transition-transform hover:-translate-y-1">
+                                    <div className="text-sm text-yellow-800 font-bold mb-1">总计：单人真人口播</div>
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-4xl font-black text-yellow-600 drop-shadow-sm">{data.totalHistory.single} <span className="text-sm font-normal text-yellow-700">个</span></span>
+                                        <div className="flex bg-white rounded-lg border border-yellow-100 shadow-sm">
+                                            <button onClick={() => updateTotalHistory('single', -1)} className="px-3 py-1.5 text-gray-500 hover:bg-yellow-50"><icons.Minus /></button>
+                                            <button onClick={() => updateTotalHistory('single', 1)} className="px-3 py-1.5 text-gray-500 hover:bg-yellow-50 border-l border-yellow-100"><icons.Plus /></button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="p-4 rounded-xl bg-white/70 backdrop-blur-sm border border-yellow-200 shadow-sm transition-transform hover:-translate-y-1">
+                                    <div className="text-sm text-yellow-800 font-bold mb-1">总计：双人问答口播</div>
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-4xl font-black text-yellow-600 drop-shadow-sm">{data.totalHistory.duo} <span className="text-sm font-normal text-yellow-700">个</span></span>
+                                        <div className="flex bg-white rounded-lg border border-yellow-100 shadow-sm">
+                                            <button onClick={() => updateTotalHistory('duo', -1)} className="px-3 py-1.5 text-gray-500 hover:bg-yellow-50"><icons.Minus /></button>
+                                            <button onClick={() => updateTotalHistory('duo', 1)} className="px-3 py-1.5 text-gray-500 hover:bg-yellow-50 border-l border-yellow-100"><icons.Plus /></button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="p-4 rounded-xl bg-white/70 backdrop-blur-sm border border-yellow-200 shadow-sm transition-transform hover:-translate-y-1">
+                                    <div className="text-sm text-yellow-800 font-bold mb-1">总计：AI 口播视频</div>
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-4xl font-black text-yellow-600 drop-shadow-sm">{data.totalHistory.ai} <span className="text-sm font-normal text-yellow-700">个</span></span>
+                                        <div className="flex bg-white rounded-lg border border-yellow-100 shadow-sm">
+                                            <button onClick={() => updateTotalHistory('ai', -1)} className="px-3 py-1.5 text-gray-500 hover:bg-yellow-50"><icons.Minus /></button>
+                                            <button onClick={() => updateTotalHistory('ai', 1)} className="px-3 py-1.5 text-gray-500 hover:bg-yellow-50 border-l border-yellow-100"><icons.Plus /></button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            {/* 本周待剪素材分类库存 */}
+                            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 md:col-span-2">
+                                <div className="flex items-center gap-3 mb-6 pb-3 border-b border-gray-100">
+                                    <div className="p-2.5 bg-indigo-50 rounded-xl border border-indigo-100"><icons.Layers /></div>
+                                    <div>
+                                        <h2 className="text-lg font-bold text-gray-800">本周待剪素材 (各类型总任务)</h2>
+                                        <p className="text-xs text-gray-500 font-normal mt-0.5">周初手动设置任务量，今日完成剪辑会自动扣减。</p>
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    <div className={`p-4 rounded-xl border transition-colors ${data.weeklyRaw.single < 0 ? 'bg-red-50 border-red-200' : 'bg-gray-50 border-gray-200 hover:bg-white'}`}>
+                                        <div className="text-sm text-gray-500 font-medium mb-1">待剪：单人真人口播</div>
+                                        <div className="flex items-center justify-between">
+                                            <span className={`text-4xl font-bold ${data.weeklyRaw.single < 0 ? 'text-red-600' : 'text-indigo-600'}`}>{data.weeklyRaw.single}</span>
+                                            <div className="flex bg-white rounded-lg border shadow-sm">
+                                                <button onClick={() => updateWeeklyRaw('single', -1)} className="px-2 py-1 text-gray-500 hover:bg-gray-100"><icons.Minus /></button>
+                                                <button onClick={() => updateWeeklyRaw('single', 1)} className="px-2 py-1 text-gray-500 hover:bg-gray-100 border-l"><icons.Plus /></button>
+                                            </div>
+                                        </div>
+                                        {data.weeklyRaw.single < 0 && <p className="text-xs text-red-500 mt-2 flex items-center gap-1 font-medium"><icons.AlertCircle /> 已超额或未加任务</p>}
+                                    </div>
+                                    <div className={`p-4 rounded-xl border transition-colors ${data.weeklyRaw.duo < 0 ? 'bg-red-50 border-red-200' : 'bg-gray-50 border-gray-200 hover:bg-white'}`}>
+                                        <div className="text-sm text-gray-500 font-medium mb-1">待剪：双人问答口播</div>
+                                        <div className="flex items-center justify-between">
+                                            <span className={`text-4xl font-bold ${data.weeklyRaw.duo < 0 ? 'text-red-600' : 'text-indigo-600'}`}>{data.weeklyRaw.duo}</span>
+                                            <div className="flex bg-white rounded-lg border shadow-sm">
+                                                <button onClick={() => updateWeeklyRaw('duo', -1)} className="px-2 py-1 text-gray-500 hover:bg-gray-100"><icons.Minus /></button>
+                                                <button onClick={() => updateWeeklyRaw('duo', 1)} className="px-2 py-1 text-gray-500 hover:bg-gray-100 border-l"><icons.Plus /></button>
+                                            </div>
+                                        </div>
+                                        {data.weeklyRaw.duo < 0 && <p className="text-xs text-red-500 mt-2 flex items-center gap-1 font-medium"><icons.AlertCircle /> 已超额或未加任务</p>}
+                                    </div>
+                                    <div className={`p-4 rounded-xl border transition-colors ${data.weeklyRaw.ai < 0 ? 'bg-red-50 border-red-200' : 'bg-gray-50 border-gray-200 hover:bg-white'}`}>
+                                        <div className="text-sm text-gray-500 font-medium mb-1">待剪：AI 口播视频</div>
+                                        <div className="flex items-center justify-between">
+                                            <span className={`text-4xl font-bold ${data.weeklyRaw.ai < 0 ? 'text-red-600' : 'text-indigo-600'}`}>{data.weeklyRaw.ai}</span>
+                                            <div className="flex bg-white rounded-lg border shadow-sm">
+                                                <button onClick={() => updateWeeklyRaw('ai', -1)} className="px-2 py-1 text-gray-500 hover:bg-gray-100"><icons.Minus /></button>
+                                                <button onClick={() => updateWeeklyRaw('ai', 1)} className="px-2 py-1 text-gray-500 hover:bg-gray-100 border-l"><icons.Plus /></button>
+                                            </div>
+                                        </div>
+                                        {data.weeklyRaw.ai < 0 && <p className="text-xs text-red-500 mt-2 flex items-center gap-1 font-medium"><icons.AlertCircle /> 已超额或未加任务</p>}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* 今日剪辑 */}
+                            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+                                <div className="flex items-center gap-3 mb-5 pb-3 border-b border-gray-100">
+                                    <div className="p-2.5 bg-blue-50 rounded-xl border border-blue-100"><icons.Scissors /></div>
+                                    <h2 className="text-lg font-bold text-gray-800">1. 今日剪辑任务</h2>
+                                </div>
+                                <div className="space-y-2">
+                                    <CounterRow label="单人真人口播" current={data.produced.single} target={TARGETS.produce.single} onUpdate={(val) => updateProduced('single', val)} iconName="Video" />
+                                    <CounterRow label="双人问答口播" current={data.produced.duo} target={TARGETS.produce.duo} onUpdate={(val) => updateProduced('duo', val)} iconName="Video" />
+                                    <CounterRow label="AI 口播视频" current={data.produced.ai} target={TARGETS.produce.ai} onUpdate={(val) => updateProduced('ai', val)} iconName="Video" />
+                                </div>
+                            </div>
+
+                            {/* 今日发布 */}
+                            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+                                <div className="flex items-center gap-3 mb-5 pb-3 border-b border-gray-100">
+                                    <div className="p-2.5 bg-green-50 rounded-xl border border-green-100"><icons.Send /></div>
+                                    <h2 className="text-lg font-bold text-gray-800">2. 今日发布任务</h2>
+                                </div>
+                                <div className="space-y-2">
+                                    <CounterRow label="主号: 发AI视频" current={data.published.wx1_ai} target={TARGETS.publish.wx1_ai} onUpdate={(val) => updatePublished('wx1_ai', val)} iconName="Smartphone" />
+                                    <CounterRow label="主号: 发单人视频" current={data.published.wx2_single} target={TARGETS.publish.wx2_single} onUpdate={(val) => updatePublished('wx2_single', val)} iconName="Smartphone" />
+                                    <CounterRow label="电能女王: 发AI视频" current={data.published.wx2_ai} target={TARGETS.publish.wx2_ai} onUpdate={(val) => updatePublished('wx2_ai', val)} iconName="Smartphone" />
+                                    <CounterRow label="抖音: 发AI视频" current={data.published.dy_ai} target={TARGETS.publish.dy_ai} onUpdate={(val) => updatePublished('dy_ai', val)} iconName="Smartphone" />
+                                </div>
+                            </div>
+
+                            {/* 待发成品库 */}
+                            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 md:col-span-2">
+                                <div className="flex items-center gap-3 mb-6 pb-3 border-b border-gray-100">
+                                    <div className="p-2.5 bg-purple-50 rounded-xl border border-purple-100"><icons.Archive /></div>
+                                    <div>
+                                        <h2 className="text-lg font-bold text-gray-800">3. 剩余未发成片 (待发成品库)</h2>
+                                        <p className="text-xs text-gray-500 font-normal mt-0.5">成品库 = 历史结余 + 今日剪辑 - 今日发布</p>
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    <div className={`p-4 rounded-xl border transition-colors ${currentInventory.single < 0 ? 'bg-red-50 border-red-200' : 'bg-gray-50 border-gray-200 hover:bg-white'}`}>
+                                        <div className="text-sm text-gray-500 font-medium mb-1">单人真人口播</div>
+                                        <div className="flex items-center justify-between">
+                                            <span className={`text-4xl font-bold ${currentInventory.single < 0 ? 'text-red-600' : 'text-gray-800'}`}>{currentInventory.single}</span>
+                                            <div className="flex bg-white rounded-lg border shadow-sm">
+                                                <button onClick={() => updateBaseInventory('single', -1)} className="px-2 py-1 text-gray-500 hover:bg-gray-100"><icons.Minus /></button>
+                                                <button onClick={() => updateBaseInventory('single', 1)} className="px-2 py-1 text-gray-500 hover:bg-gray-100 border-l"><icons.Plus /></button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div className={`p-4 rounded-xl border transition-colors ${currentInventory.duo < 0 ? 'bg-red-50 border-red-200' : 'bg-gray-50 border-gray-200 hover:bg-white'}`}>
+                                        <div className="text-sm text-gray-500 font-medium mb-1">双人问答口播</div>
+                                        <div className="flex items-center justify-between">
+                                            <span className={`text-4xl font-bold ${currentInventory.duo < 0 ? 'text-red-600' : 'text-gray-800'}`}>{currentInventory.duo}</span>
+                                            <div className="flex bg-white rounded-lg border shadow-sm">
+                                                <button onClick={() => updateBaseInventory('duo', -1)} className="px-2 py-1 text-gray-500 hover:bg-gray-100"><icons.Minus /></button>
+                                                <button onClick={() => updateBaseInventory('duo', 1)} className="px-2 py-1 text-gray-500 hover:bg-gray-100 border-l"><icons.Plus /></button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div className={`p-4 rounded-xl border transition-colors ${currentInventory.ai < 0 ? 'bg-red-50 border-red-200' : 'bg-gray-50 border-gray-200 hover:bg-white'}`}>
+                                        <div className="text-sm text-gray-500 font-medium mb-1">AI 口播视频</div>
+                                        <div className="flex items-center justify-between">
+                                            <span className={`text-4xl font-bold ${currentInventory.ai < 0 ? 'text-red-600' : 'text-gray-800'}`}>{currentInventory.ai}</span>
+                                            <div className="flex bg-white rounded-lg border shadow-sm">
+                                                <button onClick={() => updateBaseInventory('ai', -1)} className="px-2 py-1 text-gray-500 hover:bg-gray-100"><icons.Minus /></button>
+                                                <button onClick={() => updateBaseInventory('ai', 1)} className="px-2 py-1 text-gray-500 hover:bg-gray-100 border-l"><icons.Plus /></button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* 确认结转弹窗 */}
+                        {showConfirmDialog && (
+                            <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
+                                <div className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-2xl">
+                                    <div className="flex items-center gap-3 mb-3">
+                                        <div className="p-2 bg-indigo-50 rounded-full text-indigo-600"><icons.RefreshCw className="w-5 h-5" /></div>
+                                        <h3 className="text-xl font-bold text-gray-900">结束今天工作？</h3>
+                                    </div>
+                                    <p className="text-sm text-gray-600 mb-6 leading-relaxed">
+                                        确定要结转吗？今日的打卡数量将清零，剩余库存会自动结转至明日。<strong className="text-yellow-600">历史总计数据不受影响，将被永久保留。</strong>
+                                    </p>
+                                    <div className="flex justify-end gap-3">
+                                        <button onClick={() => setShowConfirmDialog(false)} className="px-5 py-2.5 text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-xl text-sm font-bold transition-colors">取消</button>
+                                        <button onClick={confirmEndDay} className="px-5 py-2.5 text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl text-sm font-bold shadow-md transition-all active:scale-95">确定并上传云端</button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
