@@ -60,7 +60,7 @@
         };
 
         // ==========================================
-        // ☁️ 云端数据库配置区 (已为您完美修复)
+        // ☁️ 云端数据库配置区 (已保留你的专属配置)
         // ==========================================
         const USER_FIREBASE_CONFIG = {
             apiKey: "AIzaSyA5-dgYm9YdOqiuhobzcjKnc19lfydGpzw",
@@ -100,7 +100,7 @@
 
         const defaultData = {
             produced: { single: 0, duo: 0, ai: 0 },
-            published: { wx1_ai: 0, wx2_single: 0, wx2_ai: 0, dy_ai: 0 },
+            published: { wx1_ai: 0, wx2_single: 0, wx2_ai: 0, dy_ai: 0, duo: 0 }, // 新增双人发布
             baseInventory: { single: 0, duo: 0, ai: 0 },
             weeklyRaw: { single: 0, duo: 0, ai: 0 },
             totalHistory: { single: 0, duo: 0, ai: 0 }
@@ -140,14 +140,12 @@
                 return () => unsubscribe();
             }, []);
 
-            // 监听全局统一文档，解决多设备匿名 UID 不同的问题
             useEffect(() => {
                 if (!user || !db) {
                     setDataLoading(false);
                     return;
                 }
 
-                // 核心修复点：使用 public/data 全局路径，确保手机电脑读写同一份文件
                 const docRef = db.doc(`artifacts/${appId}/public/data/videoTrackerData/mainDoc`);
                 
                 const unsubscribe = docRef.onSnapshot((docSnap) => {
@@ -165,7 +163,6 @@
                 return () => unsubscribe();
             }, [user]);
 
-            // 通用云端更新函数
             const updateCloudData = useCallback((updater) => {
                 setData(prevData => {
                     const newData = updater(prevData);
@@ -179,7 +176,7 @@
 
             const TARGETS = {
                 produce: { single: 10, duo: 10, ai: 10 },
-                publish: { wx1_ai: 10, wx2_single: 10, wx2_ai: 10, dy_ai: 10 }
+                publish: { wx1_ai: 10, wx2_single: 10, wx2_ai: 10, dy_ai: 10, duo: 10 } // 添加双人发布目标
             };
 
             const updateProduced = (type, delta) => {
@@ -229,16 +226,17 @@
 
             const confirmEndDay = () => {
                 updateCloudData(prev => {
+                    // 结转算法保持与实时计算一致
                     const currentInv = {
                         single: (prev.baseInventory.single || 0) + (prev.produced.single || 0) - (prev.published.wx2_single || 0),
-                        duo: (prev.baseInventory.duo || 0) + (prev.produced.duo || 0),
-                        ai: (prev.baseInventory.ai || 0) + (prev.produced.ai || 0) - ((prev.published.wx1_ai || 0) + (prev.published.wx2_ai || 0) + (prev.published.dy_ai || 0))
+                        duo: (prev.baseInventory.duo || 0) + (prev.produced.duo || 0) - (prev.published.duo || 0),
+                        ai: (prev.baseInventory.ai || 0) + (prev.produced.ai || 0) - Math.max((prev.published.wx1_ai || 0), (prev.published.wx2_ai || 0), (prev.published.dy_ai || 0))
                     };
                     return {
                         ...prev,
                         baseInventory: currentInv,
                         produced: { single: 0, duo: 0, ai: 0 },
-                        published: { wx1_ai: 0, wx2_single: 0, wx2_ai: 0, dy_ai: 0 }
+                        published: { wx1_ai: 0, wx2_single: 0, wx2_ai: 0, dy_ai: 0, duo: 0 }
                     };
                 });
                 setShowConfirmDialog(false);
@@ -299,10 +297,12 @@
                 );
             };
 
+            // 核心逻辑：计算当前库存
+            // AI库存扣减采用 Math.max 逻辑：选取三个平台中发布数量最大的那一个作为扣减基数
             const currentInventory = {
                 single: (data.baseInventory.single || 0) + (data.produced.single || 0) - (data.published.wx2_single || 0),
-                duo: (data.baseInventory.duo || 0) + (data.produced.duo || 0),
-                ai: (data.baseInventory.ai || 0) + (data.produced.ai || 0) - ((data.published.wx1_ai || 0) + (data.published.wx2_ai || 0) + (data.published.dy_ai || 0))
+                duo: (data.baseInventory.duo || 0) + (data.produced.duo || 0) - (data.published.duo || 0),
+                ai: (data.baseInventory.ai || 0) + (data.produced.ai || 0) - Math.max((data.published.wx1_ai || 0), (data.published.wx2_ai || 0), (data.published.dy_ai || 0))
             };
 
             return (
@@ -447,6 +447,8 @@
                                     <CounterRow label="主号: 发单人视频" current={data.published.wx2_single} target={TARGETS.publish.wx2_single} onUpdate={(val) => updatePublished('wx2_single', val)} iconName="Smartphone" />
                                     <CounterRow label="电能女王: 发AI视频" current={data.published.wx2_ai} target={TARGETS.publish.wx2_ai} onUpdate={(val) => updatePublished('wx2_ai', val)} iconName="Smartphone" />
                                     <CounterRow label="抖音: 发AI视频" current={data.published.dy_ai} target={TARGETS.publish.dy_ai} onUpdate={(val) => updatePublished('dy_ai', val)} iconName="Smartphone" />
+                                    {/* 新增的双人发布项 */}
+                                    <CounterRow label="发布: 双人问答口播" current={data.published.duo} target={TARGETS.publish.duo} onUpdate={(val) => updatePublished('duo', val)} iconName="Smartphone" />
                                 </div>
                             </div>
 
